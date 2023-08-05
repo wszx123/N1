@@ -1,29 +1,18 @@
-#
-# Copyright (c) 2019-2020 P3TERX <https://p3terx.com>
-#
-# This is free software, licensed under the MIT License.
-# See /LICENSE for more information.
-#
-# https://github.com/P3TERX/Actions-OpenWrt
-# Description: Build OpenWrt using GitHub Actions
-#
-# 优化调整 by https://github.com/quanjindeng/Actions_OpenWrt-Amlogic
-#
 
-name: 编译固件
+name: N1-旁路由-自用
 
 on:
   repository_dispatch:
   workflow_dispatch:
 
-  schedule:
-    - cron: 0 16 * * 4
+  #schedule:
+    #- cron: 0 16 * * 4
 
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
   REPO_BRANCH: master
-  FEEDS_CONF: feeds.conf.default
-  CONFIG_FILE: .config-full
+  FEEDS_CONF: N1/0218-feeds.conf.default
+  CONFIG_FILE: N1/0222-1.config
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
   TZ: Asia/Shanghai
@@ -33,27 +22,9 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: 创建编译空间挂载点
-      run: |
-        sudo mkdir -p /workdir
-        sudo chown $USER:$GROUPS /workdir
-        
-    - name: 最大化编译空间
-      uses: easimon/maximize-build-space@master
-      with:
-        root-reserve-mb: 2048
-        swap-size-mb: 1024
-        build-mount-path: /workdir
-        overprovision-lvm: 'true'
-        remove-dotnet: 'true'
-        remove-android: 'true'
-        remove-haskell: 'true'
-        remove-codeql: 'true'
-        remove-docker-images: 'true'
-          
-    - name: 检查Actions
+    - name: Checkout
       uses: actions/checkout@v3
-    
+
     - name: 检查服务器配置
       run: |
         echo "警告⚠"
@@ -76,28 +47,37 @@ jobs:
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo apt-get update -y
-        sudo apt-get full-upgrade -y
-        sudo apt-get install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo -E apt-get -qq update -y
+        sudo -E apt-get -qq install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
         bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib \
         git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev \
         libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz \
-        mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pyelftools \
-        libpython3-dev qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip \
-        vim wget xmlto xxd zlib1g-dev
+        genisoimage msmtp nano ninja-build npm p7zip p7zip-full patch pkgconf python2.7 python3 python3-pip qemu-utils \
+        rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev libfuse-dev
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
-        echo "硬盘详情："
-        df -Th
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+        # 清理多余文件，腾出磁盘空间
+        docker rmi $(docker images -q)
+        # sudo -E apt-get remove -y --purge azure-cli ghc zulu* llvm* firefox google* dotnet* powershell mysql* php* android*
+        # sudo rm -rf /etc/mysql /etc/php /swapfile
 
     - name: 克隆源码
       working-directory: /workdir
       run: |
+        df -hT $PWD
         git clone $REPO_URL -b $REPO_BRANCH openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+        cd openwrt
+        useVersionInfo=$(git show -s --date=short --format="date: %cd<br/>commit: %s<br/>commit hash: %H")
+        echo "useVersionInfo=$useVersionInfo" >> $GITHUB_ENV
+        echo "DATE=$(date "+%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+        echo "tag_name=$(date +%Y%m%d)" >> $GITHUB_ENV
 
-    - name: 加载自定义feeds
+    - name: 加载DIY_P1
       run: |
         [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
         chmod +x $DIY_P1_SH
@@ -110,7 +90,7 @@ jobs:
     - name: 安装feeds
       run: cd openwrt && ./scripts/feeds install -a
 
-    - name: 加载自定义配置
+    - name: 加载DIY_P2
       run: |
         [ -e files ] && mv files openwrt/files
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
@@ -126,9 +106,49 @@ jobs:
         make download -j8
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
-        echo "硬盘详情："
-        df -Th
+        
+    - name: 修改network
+      run: |
+        cd openwrt
+        mkdir -p files/etc/config/
+        cp $GITHUB_WORKSPACE/Diy/network files/etc/config/network -v
+        chmod -R 755 .
+        
+    - name: 修改dhcp
+      run: |
+        cd openwrt
+        mkdir -p files/etc/config/
+        cp $GITHUB_WORKSPACE/Diy/dhcp files/etc/config/dhcp -v
+        chmod -R 755 .
 
+    - name: 更换软件源-1
+      run: |
+        cd openwrt
+        mkdir -p files/etc/
+        cp $GITHUB_WORKSPACE/Diy/opkg.conf files/etc/opkg.conf -v
+        chmod -R 755 .
+    
+    - name: 更换软件源-2
+      run: |
+        cd openwrt
+        mkdir -p files/etc/opkg/
+        cp $GITHUB_WORKSPACE/Diy/distfeeds.conf files/etc/opkg/distfeeds.conf -v
+        chmod -R 755 .
+
+    - name: 更换软件源-3
+      run: |
+        cd openwrt
+        mkdir -p files/etc/opkg/
+        cp $GITHUB_WORKSPACE/Diy/customfeeds.conf files/etc/opkg/customfeeds.conf -v
+        chmod -R 755 .   
+        
+    - name: 修改防火墙参数
+      run: |
+        cd openwrt
+        mkdir -p files/etc/
+        cp $GITHUB_WORKSPACE/Diy/firewall.user files/etc/firewall.user -v
+        chmod -R 755 .
+        
     - name: 编译固件
       id: compile
       run: |
@@ -146,60 +166,62 @@ jobs:
         echo "清理之前："
         df -hT
         mkdir openwrt-armvirt
-        mkdir /workdir/upload
-        cp openwrt/bin/targets/*/*/*.tar.gz /workdir/upload/
         mv openwrt/bin/targets/*/*/*.tar.gz openwrt-armvirt/
         echo -e "\n"
         echo "列出空间占用前10的目录或文件："
-        sudo du -h --max-depth=1 /workdir |sort -nr | head -10
-        rm -rf /workdir/openwrt/
+        sudo du -h --max-depth=1 /workdir/openwrt |sort -nr | head -10
+        rm -rf /workdir/openwrt/*
         echo -e "\n"
         echo "清理之后："
         df -hT
         echo -e "\n"
-        echo "/workdir路径文件"
+        echo "当前路径文件"
         ls -l
         echo -e "\n"
         echo "列出空间占用前10的目录或文件："
-        sudo du -h --max-depth=1 /workdir |sort -nr | head -10
+        sudo du -h --max-depth=1 /workdir/openwrt |sort -nr | head -10
 
     - name: 打包内核
       uses: unifreq/openwrt_packit@master
       env:
-        WHOAMI: deng
+        WHOAMI: ham
+        OPENWRT_VER: R23.3.3
         OPENWRT_ARMVIRT: openwrt-armvirt/*.tar.gz
         PACKAGE_SOC: s905d
-       # KERNEL_AUTO_LATEST: false
-       # KERNEL_REPO_URL: https://github.com/quanjindeng/Actions_OpenWrt-Amlogic/tree/main/kernel
-        KERNEL_VERSION_NAME: 5.15.105_6.1.22
-        
-    - name: 整理文件
-      run: mv /opt/openwrt_packit/output/* /workdir/upload/
-      
+        KERNEL_AUTO_LATEST: true
+       # KERNEL_REPO_URL: https://github.com/ham0223/OpenWRT-N1/tree/main/opt
+        KERNEL_VERSION_NAME: 5.4.
+        GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
     - name: 发布固件
       uses: ncipollo/release-action@v1
       with:
-        tag: openwrt_armvirt_v8_${{ env.PACKAGED_OUTPUTDATE }}
-        artifacts: /workdir/upload/*
+        name: OpenWrt-N1 → ${{ env.DATE }}
+        tag: N1-旁_${{ env.tag_name }}
+        artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
         allowUpdates: true
         token: ${{ secrets.GITHUB_TOKEN }}
         body: |
-          ### **适用于Amlogic平台的N1盒子OpenWrt固件--全插件**
-          * **固件信息：**
-          默认IP: `10.10.10.1`
-          默认用户名: `root`
-          默认密码: `password`
-          * **使用方法：**
-          1. 安装固件：写入U盘直接使用；U盘启动后可输入命令 `openwrt-install-amlogic` 按照英文提示写入到emmc
-          2. 更新固件：将固件放在 `/mnt/mmcblk2p4/` 目录下，输入命令 `openwrt-update-amlogic` 可直接更新
-          3. 登录Luci界面后，可直接使用`晶晨宝盒`插件进行写入emmc或者更新操作（使用前先按需求填写好插件设置），免去手动输入命令！
-          * **更新说明：**
-          目前已集成大部分常用插件！
-          * **N1云编译OP固件互助交流群：**
-          https://t.me/OpenWrt_n1
-          * **提示：**
-          `openwrt_s905d_n1_XX_XX` 文件名才是固件！
-
+              ---  使用说明 ---
+              
+              自用固件，插件较少! 
+              默认旁路由模式 请手动设置IP
+              IP地址:192.168.123.X
+              子网掩码：255.255.255.0
+              网关：192.168.123.2
+              用户名：root
+              密码：password
+              刷入EMMC命令: ./install-to-emmc.sh
+              kissyouhunter大佬的其它插件一键安装脚本：
+              bash <(curl -s -S -L nb0.cc/kiss)
+              
+              更新说明：
+              2023-0303:添加防火墙自定义参数。
+              2023-0306:更新内核到最新，修正内核名字，其他插件同步上游更新。
+              2023-0325:内核及其插件同步上游更新。
+              2023-0422:修复编译出错，添加dns缓存，同步上游插件的更新。
+              2023-0507:同步上游的更新。
+          
     - name: 清理Actions空间
       uses: Mattraks/delete-workflow-runs@main
       with:
@@ -208,13 +230,4 @@ jobs:
           keep_minimum_runs: 0
           retain_days: 7
           #retain_days: ${{ github.event.inputs.action_days }}
-    
-    - name: 删除多余releases
-      uses: dev-drprasad/delete-older-releases@master
-      with:
-        repo: ${{ github.repository }}
-        keep_latest: 6
-        #keep_latest: ${{ github.event.inputs.rele }}
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
